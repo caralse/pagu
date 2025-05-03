@@ -13,12 +13,7 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
-enum editor_key {
-    ARROW_LEFT = 'a',
-    ARROW_RIGHT = 'd',
-    ARROW_UP = 'w',
-    ARROW_DOWN = 's'
-};
+enum editor_key { ARROW_LEFT = 1000, ARROW_RIGHT, ARROW_UP, ARROW_DOWN };
 
 typedef struct {
     int cx, cy;
@@ -33,7 +28,7 @@ editorConfig E;
 void enable_raw_mode(void);
 void disable_raw_mode(void);
 void die(const char *);
-char e_read_key();
+int e_read_key();
 int get_window_size(int *, int *);
 int get_cursor_pos(int *, int *);
 
@@ -50,7 +45,7 @@ void ab_free(struct abuf *ab);
 
 // input
 void e_process_keypress();
-void e_move_cursor(char);
+void e_move_cursor(int);
 
 // output
 void e_clear();
@@ -104,7 +99,7 @@ void die(const char *s) {
     exit(1);
 }
 
-char e_read_key() {
+int e_read_key() {
     int nread;
     char c;
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
@@ -191,7 +186,7 @@ void ab_free(struct abuf *ab) { free(ab->b); }
 
 // input
 void e_process_keypress() {
-    char c = e_read_key();
+    int c = e_read_key();
     switch (c) {
     case CTRL_KEY('q'):
         write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -199,28 +194,28 @@ void e_process_keypress() {
         exit(0);
         break;
 
-    case 'w':
-    case 's':
-    case 'a':
-    case 'd':
+    case ARROW_UP:
+    case ARROW_DOWN:
+    case ARROW_LEFT:
+    case ARROW_RIGHT:
         e_move_cursor(c);
         break;
     }
 }
 
-void e_move_cursor(char key) {
+void e_move_cursor(int key) {
     switch (key) {
-    case 'a':
-        E.cx--;
+    case ARROW_LEFT:
+        E.cx -= E.cx - 1 < 0 ? 0 : 1;
         break;
-    case 'd':
-        E.cx++;
+    case ARROW_RIGHT:
+        E.cx += E.cx + 1 > E.screen_cols ? 0 : 1;
         break;
-    case 'w':
-        E.cy--;
+    case ARROW_UP:
+        E.cy -= E.cy - 1 < 0 ? 0 : 1;
         break;
-    case 's':
-        E.cy++;
+    case ARROW_DOWN:
+        E.cy += E.cy + 2 > E.screen_rows ? 0 : 1;
         break;
     }
 }
