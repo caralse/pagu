@@ -1,6 +1,6 @@
 CC = cc
 pagu: pagu.c
-	$(CC) pagu.c -o pagu -Wall -Wextra -pedantic -std=c99
+	$(CC) pagu.c -o pagu -Wall -Wextra -pedantic -std=c23
 
 .PHONY: run
 run: pagu
