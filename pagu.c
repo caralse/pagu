@@ -8,9 +8,13 @@
 #include <termios.h>
 #include <unistd.h>
 
+// defines
+#define PAGU_V "0.0.1"
+
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 typedef struct {
+    int cx, cy;
     int screen_rows;
     int screen_cols;
     struct termios orig_termios;
@@ -168,23 +172,47 @@ void e_process_keypress() {
 // output
 void e_clear() {
     struct abuf ab = ABUF_INIT;
-    ab_append(&ab, "\x1b[2J", 4);
+    ab_append(&ab, "\x1b[?25l", 6);
     ab_append(&ab, "\x1b[H", 3);
     e_draw_rows(&ab);
     ab_append(&ab, "\x1b[H", 3);
+    ab_append(&ab, "\x1b[?25h", 6);
     write(STDOUT_FILENO, ab.b, ab.len);
     ab_free(&ab);
 }
 
 void e_draw_rows(struct abuf *ab) {
+    ab_append(ab, "\x1b[K", 3); // k -> erase line
     for (int y = 0; y < E.screen_rows - 1; y++) {
-        ab_append(ab, "~\r\n", 3);
+        if (y == E.screen_rows / 3) {
+            char welcome[80];
+            int welcomelen = snprintf(welcome, sizeof(welcome),
+                                      "pagu editor -- version %s\r\n", PAGU_V);
+            if (welcomelen > E.screen_cols) {
+                welcomelen = E.screen_cols;
+            }
+            int padding = (E.screen_cols - welcomelen) / 2;
+            if (padding) {
+                ab_append(ab, "~", 1);
+                padding--;
+            }
+            while (padding--) {
+                ab_append(ab, " ", 1);
+            }
+            ab_append(ab, welcome, welcomelen);
+        } else {
+            ab_append(ab, "~\r\n", 3);
+        }
+        ab_append(ab, "\x1b[K", 3);
     }
     ab_append(ab, "~", 1);
 }
 
 // init
 void e_init() {
+    E.cx = 0;
+    E.cy = 0;
+
     if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
         die("get_window_size");
     }
