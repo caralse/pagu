@@ -13,6 +13,13 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+enum editor_key {
+    ARROW_LEFT = 'a',
+    ARROW_RIGHT = 'd',
+    ARROW_UP = 'w',
+    ARROW_DOWN = 's'
+};
+
 typedef struct {
     int cx, cy;
     int screen_rows;
@@ -43,6 +50,7 @@ void ab_free(struct abuf *ab);
 
 // input
 void e_process_keypress();
+void e_move_cursor(char);
 
 // output
 void e_clear();
@@ -100,10 +108,34 @@ char e_read_key() {
     int nread;
     char c;
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
-        if (nread == -1 && errno != EAGAIN)
+        if (nread == -1 && errno != EAGAIN) {
             die("read");
+        }
     }
-    return c;
+    if (c == '\x1b') {
+        char seq[3];
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) {
+            return '\x1b';
+        }
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) {
+            return '\x1b';
+        }
+        if (seq[0] == '[') {
+            switch (seq[1]) {
+            case 'A':
+                return ARROW_UP;
+            case 'B':
+                return ARROW_DOWN;
+            case 'C':
+                return ARROW_RIGHT;
+            case 'D':
+                return ARROW_LEFT;
+            }
+        }
+        return '\x1b';
+    } else {
+        return c;
+    }
 }
 
 int get_window_size(int *rows, int *cols) {
@@ -166,6 +198,30 @@ void e_process_keypress() {
         write(STDOUT_FILENO, "\x1b[H", 3);
         exit(0);
         break;
+
+    case 'w':
+    case 's':
+    case 'a':
+    case 'd':
+        e_move_cursor(c);
+        break;
+    }
+}
+
+void e_move_cursor(char key) {
+    switch (key) {
+    case 'a':
+        E.cx--;
+        break;
+    case 'd':
+        E.cx++;
+        break;
+    case 'w':
+        E.cy--;
+        break;
+    case 's':
+        E.cy++;
+        break;
     }
 }
 
@@ -175,7 +231,9 @@ void e_clear() {
     ab_append(&ab, "\x1b[?25l", 6);
     ab_append(&ab, "\x1b[H", 3);
     e_draw_rows(&ab);
-    ab_append(&ab, "\x1b[H", 3);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    ab_append(&ab, buf, strlen(buf));
     ab_append(&ab, "\x1b[?25h", 6);
     write(STDOUT_FILENO, ab.b, ab.len);
     ab_free(&ab);
