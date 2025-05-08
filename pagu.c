@@ -1,3 +1,7 @@
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdint.h>
@@ -5,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -18,6 +23,7 @@ enum editor_key {
     ARROW_RIGHT,
     ARROW_UP,
     ARROW_DOWN,
+    DEL_KEY,
     HOME_KEY,
     END_KEY,
     PAGE_UP,
@@ -25,9 +31,16 @@ enum editor_key {
 };
 
 typedef struct {
+    int size;
+    char *chars;
+} e_row;
+
+typedef struct {
     int cx, cy;
     int screen_rows;
     int screen_cols;
+    int n_rows;
+    e_row *row;
     struct termios orig_termios;
 } editorConfig;
 
@@ -40,6 +53,12 @@ void die(const char *);
 int e_read_key();
 int get_window_size(int *, int *);
 int get_cursor_pos(int *, int *);
+
+// row operations
+void e_append_row(char *, size_t);
+
+// file IO
+void e_open(char *);
 
 // append buffer
 struct abuf {
@@ -63,9 +82,12 @@ void e_draw_rows(struct abuf *);
 // init
 void e_init();
 
-int main() {
+int main(int argc, char **argv) {
     e_init();
     enable_raw_mode();
+    if (argc >= 2) {
+        e_open(argv[1]);
+    }
 
     while (1) {
         e_clear();
@@ -133,6 +155,8 @@ int e_read_key() {
                     case '1':
                     case '7':
                         return HOME_KEY;
+                    case '3':
+                        return DEL_KEY;
                     case '4':
                     case '8':
                         return END_KEY;
@@ -211,6 +235,35 @@ int get_cursor_pos(int *rows, int *cols) {
     return 0;
 }
 
+void e_append_row(char *s, size_t len) {
+    E.row = realloc(E.row, sizeof(e_row) * (E.n_rows + 1));
+    int at = E.n_rows;
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
+    E.n_rows++;
+}
+
+// file IO
+void e_open(char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        die("fopen");
+    }
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+    while ((linelen = getline(&line, &linecap, fp)) != -1) {
+        while (linelen > 0 &&
+               (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
+            linelen--;
+        e_append_row(line, linelen);
+    }
+    free(line);
+    fclose(fp);
+}
+
 // append buffer
 void ab_append(struct abuf *ab, const char *s, int len) {
     char *new = realloc(ab->b, ab->len + len);
@@ -233,6 +286,10 @@ void e_process_keypress() {
         exit(0);
         break;
 
+    case DEL_KEY:
+        E.cx--;
+        break;
+
     case HOME_KEY:
         E.cx = 0;
         break;
@@ -243,8 +300,9 @@ void e_process_keypress() {
     case PAGE_UP:
     case PAGE_DOWN: {
         int times = E.screen_rows;
-        while (times--)
+        while (times--) {
             e_move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+        }
     } break;
 
     case ARROW_UP:
@@ -290,24 +348,34 @@ void e_clear() {
 void e_draw_rows(struct abuf *ab) {
     ab_append(ab, "\x1b[K", 3); // k -> erase line
     for (int y = 0; y < E.screen_rows - 1; y++) {
-        if (y == E.screen_rows / 3) {
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome),
-                                      "pagu editor -- version %s\r\n", PAGU_V);
-            if (welcomelen > E.screen_cols) {
-                welcomelen = E.screen_cols;
+        if (y >= E.n_rows) {
+            if (E.n_rows == 0 && y == E.screen_rows / 3) {
+                char welcome[80];
+                int welcomelen =
+                    snprintf(welcome, sizeof(welcome),
+                             "pagu editor -- version %s\r\n", PAGU_V);
+                if (welcomelen > E.screen_cols) {
+                    welcomelen = E.screen_cols;
+                }
+                int padding = (E.screen_cols - welcomelen) / 2;
+                if (padding) {
+                    ab_append(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--) {
+                    ab_append(ab, " ", 1);
+                }
+                ab_append(ab, welcome, welcomelen);
+            } else {
+                ab_append(ab, "~\r\n", 3);
             }
-            int padding = (E.screen_cols - welcomelen) / 2;
-            if (padding) {
-                ab_append(ab, "~", 1);
-                padding--;
-            }
-            while (padding--) {
-                ab_append(ab, " ", 1);
-            }
-            ab_append(ab, welcome, welcomelen);
         } else {
-            ab_append(ab, "~\r\n", 3);
+            int len = E.row[y].size;
+            if (len > E.screen_cols) {
+                len = E.screen_cols;
+            }
+            ab_append(ab, E.row[y].chars, len);
+            ab_append(ab, "\r\n", 2);
         }
         ab_append(ab, "\x1b[K", 3);
     }
@@ -318,6 +386,8 @@ void e_draw_rows(struct abuf *ab) {
 void e_init() {
     E.cx = 0;
     E.cy = 0;
+    E.n_rows = 0;
+    E.row = NULL;
 
     if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
         die("get_window_size");
