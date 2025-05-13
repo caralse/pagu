@@ -19,6 +19,7 @@
 // defines
 #define PAGU_V "0.0.1"
 #define PAGU_TAB_STOP 4
+#define PAGU_QUIT_TIMES 1
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -51,6 +52,7 @@ typedef struct {
     int screen_rows;
     int screen_cols;
     int n_rows;
+    int dirty;
     e_row *row;
     char *filename;
     char statusmsg[80];
@@ -74,9 +76,11 @@ void e_append_row(char *, size_t);
 void e_update_row(e_row *);
 int e_cxrx(e_row *, int);
 void e_row_insert_char(e_row *, int, int);
+void e_row_delete_char(e_row *, int);
 
 // editor operations
 void e_insert_char(int);
+void e_delete_char();
 
 // file IO
 void e_open(char *);
@@ -116,7 +120,7 @@ int main(int argc, char **argv) {
         e_open(argv[1]);
     }
 
-    e_set_status_msg("HELP: Ctrl-Q = quit");
+    e_set_status_msg("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
     while (1) {
         e_clear();
@@ -278,6 +282,7 @@ void e_append_row(char *s, size_t len) {
     e_update_row(&E.row[at]);
 
     E.n_rows++;
+    E.dirty++;
 }
 
 void e_update_row(e_row *row) {
@@ -325,6 +330,17 @@ void e_row_insert_char(e_row *row, int at, int c) {
     row->size++;
     row->chars[at] = c;
     e_update_row(row);
+    E.dirty++;
+}
+
+void e_row_delete_char(e_row *row, int at) {
+    if (at < 0 || at >= row->size) {
+        return;
+    }
+    memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
+    row->size--;
+    e_update_row(row);
+    E.dirty++;
 }
 
 // editor operations
@@ -334,6 +350,17 @@ void e_insert_char(int c) {
     }
     e_row_insert_char(&E.row[E.cy], E.cx, c);
     E.cx++;
+}
+
+void e_delete_char() {
+    if (E.cy == E.n_rows) {
+        return;
+    }
+
+    if (E.cx > 0) {
+        e_row_delete_char(&E.row[E.cy], E.cx - 1);
+        E.cx--;
+    }
 }
 
 // file IO
@@ -357,6 +384,7 @@ void e_open(char *filename) {
     }
     free(line);
     fclose(fp);
+    E.dirty = 0;
 }
 
 char *e_rows_to_string(int *buflen) {
@@ -383,10 +411,20 @@ void e_save() {
     int len;
     char *buf = e_rows_to_string(&len);
     int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
-    ftruncate(fd, len);
-    write(fd, buf, len);
-    close(fd);
+    if (fd != -1) {
+        if (ftruncate(fd, len) != -1) {
+            if (write(fd, buf, len) == len) {
+                close(fd);
+                free(buf);
+                E.dirty = 0;
+                e_set_status_msg("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
+    }
     free(buf);
+    e_set_status_msg("Can't save! I/O error: %s", strerror(errno));
 }
 
 // append buffer
@@ -403,6 +441,8 @@ void ab_free(struct abuf *ab) { free(ab->b); }
 
 // input
 void e_process_keypress() {
+    static int quit_times = PAGU_QUIT_TIMES;
+
     int c = e_read_key();
     switch (c) {
     case '\r':
@@ -414,6 +454,12 @@ void e_process_keypress() {
         break;
 
     case CTRL_KEY('q'):
+        if (E.dirty && quit_times > 0) {
+            e_set_status_msg("WARNING! File has unsaved changes. "
+                             "Press Ctrl-Q again to quit or Ctrl-S to save.");
+            quit_times--;
+            return;
+        }
         write(STDOUT_FILENO, "\x1b[2J", 4);
         write(STDOUT_FILENO, "\x1b[H", 3);
         exit(0);
@@ -421,8 +467,12 @@ void e_process_keypress() {
 
     case BACKSPACE:
     case CTRL_KEY('h'):
+        e_delete_char();
+        break;
+
     case DEL_KEY:
-        E.cx--;
+        e_move_cursor(ARROW_RIGHT);
+        e_delete_char();
         break;
 
     case HOME_KEY:
@@ -440,8 +490,9 @@ void e_process_keypress() {
             E.cy = E.row_off;
         } else if (c == PAGE_DOWN) {
             E.cy = E.row_off + E.screen_rows - 1;
-            if (E.cy > E.n_rows)
+            if (E.cy > E.n_rows) {
                 E.cy = E.n_rows;
+            }
         }
 
         int times = E.screen_rows;
@@ -465,6 +516,7 @@ void e_process_keypress() {
         e_insert_char(c);
         break;
     }
+    quit_times = PAGU_QUIT_TIMES;
 }
 
 void e_move_cursor(int key) {
@@ -603,8 +655,9 @@ void e_scroll() {
 void e_draw_bar(struct abuf *ab) {
     ab_append(ab, "\x1b[7m", 4);
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
-                       E.filename ? E.filename : "[No Name]", E.n_rows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
+                       E.filename ? E.filename : "[No Name]", E.n_rows,
+                       E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d:%d ", E.cy + 1, E.cx + 1);
     if (len > E.screen_cols) {
         len = E.screen_cols;
@@ -649,6 +702,7 @@ void e_init() {
     E.cx_off = 0;
     E.render_x = 0;
     E.n_rows = 0;
+    E.dirty = 0;
     E.row = NULL;
     E.row_off = 0;
     E.col_off = 0;
