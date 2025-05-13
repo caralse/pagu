@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +23,7 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 enum editor_key {
+    BACKSPACE = 127,
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -45,6 +47,7 @@ typedef struct {
     int render_x;
     int row_off;
     int col_off;
+    int cx_off;
     int screen_rows;
     int screen_cols;
     int n_rows;
@@ -70,9 +73,15 @@ int get_cursor_pos(int *, int *);
 void e_append_row(char *, size_t);
 void e_update_row(e_row *);
 int e_cxrx(e_row *, int);
+void e_row_insert_char(e_row *, int, int);
+
+// editor operations
+void e_insert_char(int);
 
 // file IO
 void e_open(char *);
+char *e_rows_to_string(int *);
+void e_save();
 
 // append buffer
 struct abuf {
@@ -307,6 +316,26 @@ int e_cxrx(e_row *row, int cx) {
     return rx;
 }
 
+void e_row_insert_char(e_row *row, int at, int c) {
+    if (at < 0 || at > row->size) {
+        at = row->size;
+    }
+    row->chars = realloc(row->chars, row->size + 2);
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->size++;
+    row->chars[at] = c;
+    e_update_row(row);
+}
+
+// editor operations
+void e_insert_char(int c) {
+    if (E.cy == E.n_rows) {
+        e_append_row("", 0);
+    }
+    e_row_insert_char(&E.row[E.cy], E.cx, c);
+    E.cx++;
+}
+
 // file IO
 void e_open(char *filename) {
     free(E.filename);
@@ -330,6 +359,36 @@ void e_open(char *filename) {
     fclose(fp);
 }
 
+char *e_rows_to_string(int *buflen) {
+    int tot_len = 0;
+    int j;
+    for (j = 0; j < E.n_rows; j++) {
+        tot_len += E.row[j].size + 1;
+    }
+    *buflen = tot_len;
+    char *buf = malloc(tot_len);
+    char *p = buf;
+    for (j = 0; j < E.n_rows; j++) {
+        memcpy(p, E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+    return buf;
+}
+
+void e_save() {
+    if (E.filename == NULL)
+        return;
+    int len;
+    char *buf = e_rows_to_string(&len);
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+    ftruncate(fd, len);
+    write(fd, buf, len);
+    close(fd);
+    free(buf);
+}
+
 // append buffer
 void ab_append(struct abuf *ab, const char *s, int len) {
     char *new = realloc(ab->b, ab->len + len);
@@ -346,12 +405,22 @@ void ab_free(struct abuf *ab) { free(ab->b); }
 void e_process_keypress() {
     int c = e_read_key();
     switch (c) {
+    case '\r':
+        /* TODO */
+        break;
+
+    case CTRL_KEY('s'):
+        e_save();
+        break;
+
     case CTRL_KEY('q'):
         write(STDOUT_FILENO, "\x1b[2J", 4);
         write(STDOUT_FILENO, "\x1b[H", 3);
         exit(0);
         break;
 
+    case BACKSPACE:
+    case CTRL_KEY('h'):
     case DEL_KEY:
         E.cx--;
         break;
@@ -387,6 +456,14 @@ void e_process_keypress() {
     case ARROW_RIGHT:
         e_move_cursor(c);
         break;
+
+    case CTRL_KEY('l'):
+    case '\x1b':
+        break;
+
+    default:
+        e_insert_char(c);
+        break;
     }
 }
 
@@ -406,7 +483,7 @@ void e_move_cursor(int key) {
         if (row && E.render_x < row->r_size) {
             E.cx++;
             E.render_x = e_cxrx(row, E.cx);
-        } else if (row && E.render_x == row->r_size) {
+        } else if (row && E.render_x == row->r_size && E.cy < E.n_rows - 1) {
             E.cy++;
             E.cx = 0;
             E.render_x = 0;
@@ -446,8 +523,9 @@ void e_clear() {
     e_draw_bar(&ab);
     e_draw_msg(&ab);
     char buf[32];
+    E.cx_off = snprintf(NULL, 0, "%d ", E.n_rows) + 1;
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.row_off) + 1,
-             (E.render_x - E.col_off) + 1);
+             (E.render_x - E.col_off) + 1 + E.cx_off);
     ab_append(&ab, buf, strlen(buf));
     ab_append(&ab, "\x1b[?25h", 6);
     write(STDOUT_FILENO, ab.b, ab.len);
@@ -456,6 +534,9 @@ void e_clear() {
 
 void e_draw_rows(struct abuf *ab) {
     ab_append(ab, "\x1b[K", 3); // k -> erase line
+    char line_number[16];
+    int line_number_width = snprintf(NULL, 0, "%d", E.n_rows) + 1;
+
     for (int y = 0; y < E.screen_rows; y++) {
         int filerow = y + E.row_off;
         if (filerow >= E.n_rows) {
@@ -480,6 +561,10 @@ void e_draw_rows(struct abuf *ab) {
                 ab_append(ab, "~\r\n", 3);
             }
         } else {
+            snprintf(line_number, sizeof(line_number), "%*d ",
+                     line_number_width, filerow + 1);
+            ab_append(ab, line_number, strlen(line_number));
+
             int len = E.row[filerow].r_size - E.col_off;
             if (len < 0) {
                 len = 0;
@@ -495,7 +580,7 @@ void e_draw_rows(struct abuf *ab) {
 }
 
 void e_scroll() {
-    E.render_x = 0;
+    E.render_x = E.cx_off;
     if (E.cy < E.n_rows) {
         E.render_x = e_cxrx(&E.row[E.cy], E.cx);
     }
@@ -561,6 +646,7 @@ void e_draw_msg(struct abuf *ab) {
 void e_init() {
     E.cx = 0;
     E.cy = 0;
+    E.cx_off = 0;
     E.render_x = 0;
     E.n_rows = 0;
     E.row = NULL;
