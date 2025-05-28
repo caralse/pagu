@@ -72,7 +72,7 @@ int get_window_size(int *, int *);
 int get_cursor_pos(int *, int *);
 
 // row operations
-void e_append_row(char *, size_t);
+void e_insert_row(int, char *, size_t);
 void e_update_row(e_row *);
 int e_cxrx(e_row *, int);
 void e_row_insert_char(e_row *, int, int);
@@ -84,6 +84,7 @@ void e_row_append_str(e_row *, char *, size_t);
 // editor operations
 void e_insert_char(int);
 void e_delete_char();
+void e_insert_newline();
 
 // file IO
 void e_open(char *);
@@ -112,6 +113,7 @@ void e_scroll();
 void e_draw_bar(struct abuf *);
 void e_set_status_msg(const char *, ...);
 void e_draw_msg(struct abuf *);
+char *e_prompt(char *);
 
 // init
 void e_init();
@@ -272,9 +274,14 @@ int get_cursor_pos(int *rows, int *cols) {
 }
 
 // row operations
-void e_append_row(char *s, size_t len) {
+void e_insert_row(int at, char *s, size_t len) {
+    if (at < 0 || at > E.n_rows) {
+        return;
+    }
     E.row = realloc(E.row, sizeof(e_row) * (E.n_rows + 1));
-    int at = E.n_rows;
+    memmove(&E.row[at + 1], &E.row[at], sizeof(e_row) * (E.n_rows - at));
+
+    E.row = realloc(E.row, sizeof(e_row) * (E.n_rows + 1));
     E.row[at].size = len;
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
@@ -373,7 +380,7 @@ void e_row_append_str(e_row *row, char *s, size_t len) {
 // editor operations
 void e_insert_char(int c) {
     if (E.cy == E.n_rows) {
-        e_append_row("", 0);
+        e_insert_row(E.n_rows, "", 0);
     }
     e_row_insert_char(&E.row[E.cy], E.cx, c);
     E.cx++;
@@ -396,6 +403,21 @@ void e_delete_char() {
     }
 }
 
+void e_insert_newline() {
+    if (E.cx == 0) {
+        e_insert_row(E.cy, "", 0);
+    } else {
+        e_row *row = &E.row[E.cy];
+        e_insert_row(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
+        row = &E.row[E.cy];
+        row->size = E.cx;
+        row->chars[row->size] = '\0';
+        e_update_row(row);
+    }
+    E.cy++;
+    E.cx = 0;
+}
+
 // file IO
 void e_open(char *filename) {
     free(E.filename);
@@ -413,7 +435,7 @@ void e_open(char *filename) {
                (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
             linelen--;
         }
-        e_append_row(line, linelen);
+        e_insert_row(E.n_rows, line, linelen);
     }
     free(line);
     fclose(fp);
@@ -439,8 +461,13 @@ char *e_rows_to_string(int *buflen) {
 }
 
 void e_save() {
-    if (E.filename == NULL)
-        return;
+    if (E.filename == NULL) {
+        E.filename = e_prompt("Save as: %s (ESC to abort)");
+        if (E.filename == NULL) {
+            e_set_status_msg("Save aborted");
+            return;
+        }
+    }
     int len;
     char *buf = e_rows_to_string(&len);
     int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
@@ -479,7 +506,7 @@ void e_process_keypress() {
     int c = e_read_key();
     switch (c) {
     case '\r':
-        /* TODO */
+        e_insert_newline();
         break;
 
     case CTRL_KEY('s'):
@@ -595,6 +622,40 @@ void e_move_cursor(int key) {
         E.render_x = e_cxrx(row, E.cx);
     } else {
         E.render_x = 0;
+    }
+}
+
+char *e_prompt(char *prompt) {
+    size_t bufsize = 128;
+    char *buf = malloc(bufsize);
+    size_t buflen = 0;
+    buf[0] = '\0';
+    while (1) {
+        e_set_status_msg(prompt, buf);
+        e_clear();
+        int c = e_read_key();
+
+        if (c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
+            if (buflen != 0) {
+                buf[--buflen] = '\0';
+            }
+        } else if (c == '\x1b') {
+            e_set_status_msg("");
+            free(buf);
+            return NULL;
+        } else if (c == '\r') {
+            if (buflen != 0) {
+                e_set_status_msg("");
+                return buf;
+            }
+        } else if (!iscntrl(c) && c < 128) {
+            if (buflen == bufsize - 1) {
+                bufsize *= 2;
+                buf = realloc(buf, bufsize);
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
     }
 }
 
