@@ -77,6 +77,9 @@ void e_update_row(e_row *);
 int e_cxrx(e_row *, int);
 void e_row_insert_char(e_row *, int, int);
 void e_row_delete_char(e_row *, int);
+void e_free_row(e_row *);
+void e_del_row(int);
+void e_row_append_str(e_row *, char *, size_t);
 
 // editor operations
 void e_insert_char(int);
@@ -343,6 +346,30 @@ void e_row_delete_char(e_row *row, int at) {
     E.dirty++;
 }
 
+void e_free_row(e_row *row) {
+    free(row->render);
+    free(row->chars);
+}
+
+void e_del_row(int at) {
+    if (at < 0 || at >= E.n_rows) {
+        return;
+    }
+    e_free_row(&E.row[at]);
+    memmove(&E.row[at], &E.row[at + 1], sizeof(e_row) * (E.n_rows - at - 1));
+    E.n_rows--;
+    E.dirty++;
+}
+
+void e_row_append_str(e_row *row, char *s, size_t len) {
+    row->chars = realloc(row->chars, row->size + len + 1);
+    memcpy(&row->chars[row->size], s, len);
+    row->size += len;
+    row->chars[row->size] = '\0';
+    e_update_row(row);
+    E.dirty++;
+}
+
 // editor operations
 void e_insert_char(int c) {
     if (E.cy == E.n_rows) {
@@ -353,13 +380,19 @@ void e_insert_char(int c) {
 }
 
 void e_delete_char() {
-    if (E.cy == E.n_rows) {
+    if (E.cy == E.n_rows || (E.cx == 0 && E.cy == 0)) {
         return;
     }
 
     if (E.cx > 0) {
         e_row_delete_char(&E.row[E.cy], E.cx - 1);
         E.cx--;
+    } else {
+        E.cx = E.row[E.cy - 1].size;
+        e_row_append_str(&E.row[E.cy - 1], (&E.row[E.cy])->chars,
+                         (&E.row[E.cy])->size);
+        e_del_row(E.cy);
+        E.cy--;
     }
 }
 
