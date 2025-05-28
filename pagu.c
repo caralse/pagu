@@ -75,6 +75,7 @@ int get_cursor_pos(int *, int *);
 void e_insert_row(int, char *, size_t);
 void e_update_row(e_row *);
 int e_cxrx(e_row *, int);
+int e_rxcx(e_row *, int);
 void e_row_insert_char(e_row *, int, int);
 void e_row_delete_char(e_row *, int);
 void e_free_row(e_row *);
@@ -90,6 +91,9 @@ void e_insert_newline();
 void e_open(char *);
 char *e_rows_to_string(int *);
 void e_save();
+
+// find
+void e_find();
 
 // append buffer
 struct abuf {
@@ -113,7 +117,7 @@ void e_scroll();
 void e_draw_bar(struct abuf *);
 void e_set_status_msg(const char *, ...);
 void e_draw_msg(struct abuf *);
-char *e_prompt(char *);
+char *e_prompt(char *, void (*callback)(char *, int));
 
 // init
 void e_init();
@@ -125,7 +129,7 @@ int main(int argc, char **argv) {
         e_open(argv[1]);
     }
 
-    e_set_status_msg("HELP: Ctrl-S = save | Ctrl-Q = quit");
+    e_set_status_msg("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 
     while (1) {
         e_clear();
@@ -331,6 +335,21 @@ int e_cxrx(e_row *row, int cx) {
     return rx;
 }
 
+int e_rxcx(e_row *row, int rx) {
+    int cur_rx = 0;
+    int cx;
+    for (cx = 0; cx < row->size; cx++) {
+        if (row->chars[cx] == '\t') {
+            cur_rx += (PAGU_TAB_STOP - 1) - (cur_rx % PAGU_TAB_STOP);
+        }
+        cur_rx++;
+        if (cur_rx > rx) {
+            return cx;
+        }
+    }
+    return cx;
+}
+
 void e_row_insert_char(e_row *row, int at, int c) {
     if (at < 0 || at > row->size) {
         at = row->size;
@@ -462,7 +481,7 @@ char *e_rows_to_string(int *buflen) {
 
 void e_save() {
     if (E.filename == NULL) {
-        E.filename = e_prompt("Save as: %s (ESC to abort)");
+        E.filename = e_prompt("Save as: %s (ESC to abort)", NULL);
         if (E.filename == NULL) {
             e_set_status_msg("Save aborted");
             return;
@@ -487,6 +506,65 @@ void e_save() {
     e_set_status_msg("Can't save! I/O error: %s", strerror(errno));
 }
 
+// find
+void e_find_cb(char *query, int key) {
+    static int last_match = -1;
+    static int direction = 1;
+    if (key == '\r' || key == '\x1b') {
+        last_match = -1;
+        direction = 1;
+        return;
+    } else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+        direction = 1;
+    } else if (key == ARROW_LEFT || key == ARROW_UP) {
+        direction = -1;
+    } else {
+        last_match = -1;
+        direction = 1;
+    }
+
+    if (last_match == -1) {
+        direction = 1;
+    }
+    int current = last_match;
+    int i;
+    for (i = 0; i < E.n_rows; i++) {
+        current += direction;
+        if (current == -1) {
+            current = E.n_rows - 1;
+        } else if (current == E.n_rows) {
+            current = 0;
+        }
+        e_row *row = &E.row[current];
+        char *match = strstr(row->render, query);
+        if (match) {
+            last_match = current;
+            E.cy = current;
+            E.cx = e_rxcx(row, match - row->render);
+            E.row_off = E.n_rows;
+            break;
+        }
+    }
+}
+
+void e_find() {
+    int saved_cx = E.cx;
+    int saved_cy = E.cy;
+    int saved_coloff = E.col_off;
+    int saved_rowoff = E.row_off;
+
+    char *query = e_prompt("Search: %s (Use ESC/Arrows/Enter)", e_find_cb);
+
+    if (query) {
+        free(query);
+    } else {
+        E.cx = saved_cx;
+        E.cy = saved_cy;
+        E.col_off = saved_coloff;
+        E.row_off = saved_rowoff;
+    }
+}
+
 // append buffer
 void ab_append(struct abuf *ab, const char *s, int len) {
     char *new = realloc(ab->b, ab->len + len);
@@ -505,6 +583,7 @@ void e_process_keypress() {
 
     int c = e_read_key();
     switch (c) {
+
     case '\r':
         e_insert_newline();
         break;
@@ -523,6 +602,10 @@ void e_process_keypress() {
         write(STDOUT_FILENO, "\x1b[2J", 4);
         write(STDOUT_FILENO, "\x1b[H", 3);
         exit(0);
+        break;
+
+    case CTRL_KEY('f'):
+        e_find();
         break;
 
     case BACKSPACE:
@@ -625,7 +708,7 @@ void e_move_cursor(int key) {
     }
 }
 
-char *e_prompt(char *prompt) {
+char *e_prompt(char *prompt, void (*callback)(char *, int)) {
     size_t bufsize = 128;
     char *buf = malloc(bufsize);
     size_t buflen = 0;
@@ -641,11 +724,17 @@ char *e_prompt(char *prompt) {
             }
         } else if (c == '\x1b') {
             e_set_status_msg("");
+            if (callback) {
+                callback(buf, c);
+            }
             free(buf);
             return NULL;
         } else if (c == '\r') {
             if (buflen != 0) {
                 e_set_status_msg("");
+                if (callback) {
+                    callback(buf, c);
+                }
                 return buf;
             }
         } else if (!iscntrl(c) && c < 128) {
@@ -655,6 +744,9 @@ char *e_prompt(char *prompt) {
             }
             buf[buflen++] = c;
             buf[buflen] = '\0';
+        }
+        if (callback) {
+            callback(buf, c);
         }
     }
 }
