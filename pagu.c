@@ -23,6 +23,8 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+#define HL_HIGHLIGHT_NUMBERS (1 << 0)
+
 enum editor_key {
     BACKSPACE = 127,
     ARROW_LEFT = 1000,
@@ -46,6 +48,12 @@ typedef struct {
     unsigned char *hl;
 } e_row;
 
+struct e_syntax {
+    char *filetype;
+    char **filematch;
+    int flags;
+};
+
 typedef struct {
     int cx, cy;
     int render_x;
@@ -60,11 +68,21 @@ typedef struct {
     char *filename;
     char statusmsg[80];
     time_t statusmsg_time;
+    struct e_syntax *syntax;
 
     struct termios orig_termios;
 } editorConfig;
 
 editorConfig E;
+
+// file types
+char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
+
+struct e_syntax HLDB[] = {
+    {"c", C_HL_extensions, HL_HIGHLIGHT_NUMBERS},
+};
+
+#define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
 
 // terminal
 void enable_raw_mode(void);
@@ -94,6 +112,7 @@ void e_insert_newline();
 int is_separator(int c);
 void e_update_syntax(e_row *);
 int e_syntax_to_color(int);
+void e_select_hl();
 
 // file IO
 void e_open(char *);
@@ -294,18 +313,24 @@ void e_update_syntax(e_row *row) {
     row->hl = realloc(row->hl, row->r_size);
     memset(row->hl, HL_NORMAL, row->r_size);
 
+    if (E.syntax == NULL) {
+        return;
+    }
+
     int prev_sep = 1;
 
     int i = 0;
     while (i < row->r_size) {
         char c = row->render[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
-        if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
-            (c == '.' && prev_hl == HL_NUMBER)) {
-            row->hl[i] = HL_NUMBER;
-            i++;
-            prev_sep = 0;
-            continue;
+        if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
+            if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+                (c == '.' && prev_hl == HL_NUMBER)) {
+                row->hl[i] = HL_NUMBER;
+                i++;
+                prev_sep = 0;
+                continue;
+            }
         }
         prev_sep = is_separator(c);
         i++;
@@ -320,6 +345,26 @@ int e_syntax_to_color(int hl) {
         return 34;
     default:
         return 37;
+    }
+}
+
+void e_select_hl() {
+    E.syntax = NULL;
+    if (E.filename == NULL)
+        return;
+    char *ext = strrchr(E.filename, '.');
+    for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
+        struct e_syntax *s = &HLDB[j];
+        unsigned int i = 0;
+        while (s->filematch[i]) {
+            int is_ext = (s->filematch[i][0] == '.');
+            if ((is_ext && ext && !strcmp(ext, s->filematch[i])) ||
+                (!is_ext && strstr(E.filename, s->filematch[i]))) {
+                E.syntax = s;
+                return;
+            }
+            i++;
+        }
     }
 }
 
@@ -492,6 +537,8 @@ void e_open(char *filename) {
     free(E.filename);
     E.filename = strdup(filename);
 
+    e_select_hl();
+
     FILE *fp = fopen(filename, "r");
     if (!fp) {
         die("fopen");
@@ -536,6 +583,7 @@ void e_save() {
             e_set_status_msg("Save aborted");
             return;
         }
+        e_select_hl();
     }
     int len;
     char *buf = e_rows_to_string(&len);
@@ -931,7 +979,10 @@ void e_draw_bar(struct abuf *ab) {
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
                        E.filename ? E.filename : "[No Name]", E.n_rows,
                        E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%d:%d ", E.cy + 1, E.cx + 1);
+    int rlen =
+        snprintf(rstatus, sizeof(rstatus), "%s | %d/%d",
+                 E.syntax ? E.syntax->filetype : "no ft", E.cy + 1, E.n_rows);
+
     if (len > E.screen_cols) {
         len = E.screen_cols;
     }
@@ -982,6 +1033,7 @@ void e_init() {
     E.filename = NULL;
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
+    E.syntax = NULL;
 
     if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
         die("get_window_size");
