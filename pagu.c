@@ -91,6 +91,7 @@ void e_delete_char();
 void e_insert_newline();
 
 // syntax highlighting
+int is_separator(int c);
 void e_update_syntax(e_row *);
 int e_syntax_to_color(int);
 
@@ -285,14 +286,29 @@ int get_cursor_pos(int *rows, int *cols) {
 }
 
 // syntax highlighting
+int is_separator(int c) {
+    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
+}
+
 void e_update_syntax(e_row *row) {
     row->hl = realloc(row->hl, row->r_size);
     memset(row->hl, HL_NORMAL, row->r_size);
-    int i;
-    for (i = 0; i < row->r_size; i++) {
-        if (isdigit(row->render[i])) {
+
+    int prev_sep = 1;
+
+    int i = 0;
+    while (i < row->r_size) {
+        char c = row->render[i];
+        unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+        if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+            (c == '.' && prev_hl == HL_NUMBER)) {
             row->hl[i] = HL_NUMBER;
+            i++;
+            prev_sep = 0;
+            continue;
         }
+        prev_sep = is_separator(c);
+        i++;
     }
 }
 
