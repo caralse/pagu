@@ -24,6 +24,7 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 #define HL_HIGHLIGHT_NUMBERS (1 << 0)
+#define HL_HIGHLIGHT_STRINGS (1 << 1)
 
 enum editor_key {
     BACKSPACE = 127,
@@ -38,7 +39,13 @@ enum editor_key {
     PAGE_DOWN
 };
 
-enum editor_highlight { HL_NORMAL = 0, HL_NUMBER, HL_MATCH };
+enum editor_highlight {
+    HL_NORMAL = 0,
+    HL_COMMENT,
+    HL_STRING,
+    HL_NUMBER,
+    HL_MATCH
+};
 
 typedef struct {
     int size;
@@ -79,7 +86,7 @@ editorConfig E;
 char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
 
 struct e_syntax HLDB[] = {
-    {"c", C_HL_extensions, HL_HIGHLIGHT_NUMBERS},
+    { "c", C_HL_extensions, HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS },
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
@@ -318,11 +325,35 @@ void e_update_syntax(e_row *row) {
     }
 
     int prev_sep = 1;
+    int in_string = 0;
 
     int i = 0;
     while (i < row->r_size) {
         char c = row->render[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+
+        if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
+            if (in_string) {
+                row->hl[i] = HL_STRING;
+                if (c == '\\' && i + 1 < row->r_size) {
+                    row->hl[i + 1] = HL_STRING;
+                    i += 2;
+                    continue;
+                }
+                if (c == in_string) in_string = 0;
+                i++;
+                prev_sep = 1;
+                continue;
+            } else {
+                if (c == '"' || c == '\'') {
+                    in_string = c;
+                    row->hl[i] = HL_STRING;
+                    i++;
+                    continue;
+                }
+            }
+        }
+
         if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
             if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
                 (c == '.' && prev_hl == HL_NUMBER)) {
@@ -332,6 +363,7 @@ void e_update_syntax(e_row *row) {
                 continue;
             }
         }
+
         prev_sep = is_separator(c);
         i++;
     }
@@ -339,12 +371,11 @@ void e_update_syntax(e_row *row) {
 
 int e_syntax_to_color(int hl) {
     switch (hl) {
-    case HL_NUMBER:
-        return 31;
-    case HL_MATCH:
-        return 34;
-    default:
-        return 37;
+        case HL_COMMENT:return 36;
+        case HL_STRING: return 35;
+        case HL_NUMBER: return 31;
+        case HL_MATCH:  return 34;
+        default:        return 37;
     }
 }
 
@@ -361,6 +392,10 @@ void e_select_hl() {
             if ((is_ext && ext && !strcmp(ext, s->filematch[i])) ||
                 (!is_ext && strstr(E.filename, s->filematch[i]))) {
                 E.syntax = s;
+                int filerow;
+                for (filerow = 0; filerow < E.n_rows; filerow++) {
+                    e_update_syntax(&E.row[filerow]);
+                }
                 return;
             }
             i++;
