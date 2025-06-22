@@ -97,7 +97,7 @@ char *C_HL_keywords[] = {
   "switch", "if", "while", "for", "break", "continue", "return", "else",
   "struct", "union", "typedef", "static", "enum", "class", "case",
   "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
-  "void|", NULL
+  "void|", "NULL", NULL
 };
 
 struct e_syntax HLDB[] = {
@@ -447,7 +447,7 @@ void e_update_syntax(e_row *row) {
 int e_syntax_to_color(int hl) {
     switch (hl) {
         case HL_COMMENT:
-        case HL_MLCOMMENT:  return 36;
+        case HL_MLCOMMENT:  return 30;
         case HL_KEYWORD1:   return 33;
         case HL_KEYWORD2:   return 32;
         case HL_STRING:     return 35;
