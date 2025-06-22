@@ -42,6 +42,8 @@ enum editor_key {
 enum editor_highlight {
     HL_NORMAL = 0,
     HL_COMMENT,
+    HL_KEYWORD1,
+    HL_KEYWORD2,
     HL_STRING,
     HL_NUMBER,
     HL_MATCH
@@ -58,6 +60,8 @@ typedef struct {
 struct e_syntax {
     char *filetype;
     char **filematch;
+    char **keywords;
+    char *singleline_comment_start;
     int flags;
 };
 
@@ -84,9 +88,15 @@ editorConfig E;
 
 // file types
 char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
+char *C_HL_keywords[] = {
+  "switch", "if", "while", "for", "break", "continue", "return", "else",
+  "struct", "union", "typedef", "static", "enum", "class", "case",
+  "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+  "void|", NULL
+};
 
 struct e_syntax HLDB[] = {
-    { "c", C_HL_extensions, HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS },
+    { "c", C_HL_extensions, C_HL_keywords, "//", HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS },
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
@@ -320,9 +330,12 @@ void e_update_syntax(e_row *row) {
     row->hl = realloc(row->hl, row->r_size);
     memset(row->hl, HL_NORMAL, row->r_size);
 
-    if (E.syntax == NULL) {
-        return;
-    }
+    if (E.syntax == NULL) return;
+
+    char **keywords = E.syntax->keywords;
+
+    char *scs = E.syntax->singleline_comment_start;
+    int scs_len = scs ? strlen(scs) : 0;
 
     int prev_sep = 1;
     int in_string = 0;
@@ -331,6 +344,13 @@ void e_update_syntax(e_row *row) {
     while (i < row->r_size) {
         char c = row->render[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+
+        if (scs_len && !in_string) {
+            if (!strncmp(&row->render[i], scs, scs_len)) {
+                memset(&row->hl[i], HL_COMMENT, row->r_size - i);
+                break;
+            }
+        }
 
         if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
             if (in_string) {
@@ -364,6 +384,24 @@ void e_update_syntax(e_row *row) {
             }
         }
 
+        if (prev_sep) {
+            int j;
+            for (j = 0; keywords[j]; j++) {
+                int klen = strlen(keywords[j]);
+                int kw2 = keywords[j][klen - 1] == '|';
+                if (kw2) klen--;
+                if (!strncmp(&row->render[i], keywords[j], klen) && is_separator(row->render[i + klen])) {
+                    memset(&row->hl[i], kw2 ? HL_KEYWORD2 : HL_KEYWORD1, klen);
+                    i += klen;
+                    break;
+                }
+            }
+            if (keywords[j] != NULL) {
+                prev_sep = 0;
+                continue;
+            }
+        }
+
         prev_sep = is_separator(c);
         i++;
     }
@@ -372,6 +410,8 @@ void e_update_syntax(e_row *row) {
 int e_syntax_to_color(int hl) {
     switch (hl) {
         case HL_COMMENT:return 36;
+        case HL_KEYWORD1: return 33;
+        case HL_KEYWORD2: return 32;
         case HL_STRING: return 35;
         case HL_NUMBER: return 31;
         case HL_MATCH:  return 34;
